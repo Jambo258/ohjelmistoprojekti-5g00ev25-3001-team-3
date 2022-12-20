@@ -1,0 +1,18 @@
+version: '3.9'
+name: scraper_dev
+services:
+  # scraper:
+  #   build: '../'
+  #   restart: always
+  #   environment:
+  #     BROKER_HOST: 'rabbitmq'
+  #   depends_on:
+  #     - rabbitmq
+  rabbitmq:
+    image: 'rabbitmq:3.10-management'
+    container_name: rabbitmq
+    hostname: rabbitmq
+    restart: always
+    ports:
+      - '5672:5672'
+      - '15672:15672'

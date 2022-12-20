@@ -1,0 +1,219 @@
+variables:
+  REMOTE_DEV: deploy@172.16.4.245
+  REMOTE_DIR: app
+  REMOTE_PROD: deploy@172.16.6.248
+
+stages:
+  - quality-control
+  - images-push
+  - dev-deploy
+  - prod-deploy
+
+check-ts-formatting-job:
+  image: node:alpine
+  stage: quality-control
+  script:
+    - yarn add prettier
+    - yarn prettier --check ./api
+    - yarn prettier --check ./client
+
+lint-scraper-branch-job:
+  image: python:3.8-alpine
+  stage: quality-control
+  script:
+    - cd scraper/app
+    - pip install -r requirements.txt
+    - pip install pytest pytest-cov pylint nose2 nose2[coverage_plugin]
+    - pylint --disable=line-too-long,too-many-locals,pointless-string-statement,unused-import ./src/*
+    - cd src
+    - python -m nose2 --with-coverage
+    # - coverage run -m pytest
+    # - coverage report
+    - coverage xml
+  coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: scraper/app/src/coverage.xml
+  except:
+    - main
+
+lint-client-branch-job:
+  image: node:alpine
+  stage: quality-control
+  script:
+    - cd client
+    - yarn
+    - yarn tsc --noEmit && yarn eslint src/**/*.ts{,x} --max-warnings=0
+    - yarn test --watchAll=false
+  except:
+    - main
+
+lint-client-main-job:
+  image: node:alpine
+  stage: quality-control
+  script:
+    - cd client
+    - yarn
+    - yarn tsc --noEmit && yarn eslint src/**/*.ts{,x} --max-warnings=0
+    - yarn test:coverage
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: client/coverage/cobertura-coverage.xml
+  only:
+    - main
+
+lint-api-branch-job:
+  image: node:alpine
+  stage: quality-control
+  services:
+    - postgres:alpine
+  variables:
+    POSTGRES_USER: user
+    POSTGRES_PASSWORD: pass
+    POSTGRES_DB: test-db
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: 5432
+  script:
+    - export PG_PORT=5432
+    - export PG_USER=user
+    - export PG_PASSWORD=pass
+    - export PG_DATABASE=test-db
+    - export PG_HOST=postgres
+    - export NODE_ENV=test
+    - export RABBITMQ_HOST=localhost
+    - cd api
+    - yarn
+    - yarn eslint --max-warnings=0
+    - yarn build
+    - yarn cross-env DATABASE_URL=postgres://user:pass@postgres:5432/test-db node-pg-migrate up
+    - yarn test:coverage
+  except:
+    - main
+
+lint-api-main-job:
+  image: node:alpine
+  stage: quality-control
+  services:
+    - postgres:alpine
+  variables:
+    POSTGRES_USER: user
+    POSTGRES_PASSWORD: pass
+    POSTGRES_DB: test-db
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: 5432
+  script:
+    - export PG_PORT=5432
+    - export PG_USER=user
+    - export PG_PASSWORD=pass
+    - export PG_DATABASE=test-db
+    - export PG_HOST=postgres
+    - export NODE_ENV=test
+    - export RABBITMQ_HOST=localhost
+    - cd api
+    - yarn
+    - yarn eslint --max-warnings=0
+    - yarn build
+    - yarn cross-env DATABASE_URL=postgres://user:pass@postgres:5432/test-db node-pg-migrate up
+    - yarn test:coverage
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: api/coverage/cobertura-coverage.xml
+  only:
+    - main
+
+images-push-job:
+  image: docker:latest
+  stage: images-push
+  services:
+    - docker:dind
+  script:
+    - export FRONTEND_IMAGE="${CI_REGISTRY_IMAGE}/frontend"
+    - export API_IMAGE="${CI_REGISTRY_IMAGE}/api"
+    - export SCRAPER_IMAGE="${CI_REGISTRY_IMAGE}/scraper"
+    - apk update
+    - docker build  -f client/Dockerfile -t "${FRONTEND_IMAGE}" --build-arg REACT_APP_LOCAL_BACKEND_URL="${REACT_APP_LOCAL_BACKEND_URL}" ./client
+    - docker build -f api/Dockerfile -t "${API_IMAGE}" ./api
+    - docker build -f scraper/Dockerfile -t "${SCRAPER_IMAGE}" ./scraper
+    - docker login -u gitlab-ci-token -p "${CI_JOB_TOKEN}" "${CI_REGISTRY}"
+    - docker push "${FRONTEND_IMAGE}"
+    - docker push "${API_IMAGE}"
+    - docker push "${SCRAPER_IMAGE}"
+  only:
+    - main
+
+prod-deploy-job:
+  image: docker:latest
+  stage: prod-deploy
+  services:
+    - docker:dind
+  script:
+    - export FRONTEND_IMAGE="${CI_REGISTRY_IMAGE}/frontend"
+    - export API_IMAGE="${CI_REGISTRY_IMAGE}/api"
+    - export SCRAPER_IMAGE="${CI_REGISTRY_IMAGE}/scraper"
+    - apk update && apk add rsync openssh
+    - mkdir -p ~/.ssh && (umask  077 ; echo "${DEPLOY_KEY_PRIVATE}" | base64 -d > ~/.ssh/id_rsa)
+    - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+    - mkdir "${REMOTE_DIR}"
+    - cp docker-compose.prod.yml "${REMOTE_DIR}/docker-compose.yml"
+    - echo "FRONT_END_IMAGE=${FRONTEND_IMAGE}" >> "${REMOTE_DIR}/.env"
+    - echo "API_IMAGE=${API_IMAGE}" >> "${REMOTE_DIR}/.env"
+    - echo "SCRAPER_IMAGE=${SCRAPER_IMAGE}" >> "${REMOTE_DIR}/.env"
+    - echo "DB_USER=${DB_USER}" >> "${REMOTE_DIR}/.env"
+    - echo "DB_PASSWORD=${DB_PASSWORD}" >> "${REMOTE_DIR}/.env"
+    - echo "DB_NAME=${DB_NAME}" >> "${REMOTE_DIR}/.env"
+    - echo "PG_USER=${DB_USER}" >> "${REMOTE_DIR}/.env"
+    - echo "PG_DATABASE=${DB_NAME}" >> "${REMOTE_DIR}/.env"
+    - echo "PG_PASSWORD=${DB_PASSWORD}" >> "${REMOTE_DIR}/.env"
+    - echo "DATABASE_URL=${DATABASE_URL}" >> "${REMOTE_DIR}/.env"
+    - echo "API_PORT=${API_PORT}" >> "${REMOTE_DIR}/.env"
+    - echo "JWT_SECRET=${JWT_SECRET}" >> "${REMOTE_DIR}/.env"
+    - echo "PG_HOST=${PG_HOST}" >> "${REMOTE_DIR}/.env"
+    - echo "RABBITMQ_HOST=${RABBITMQ_HOST}" >> "${REMOTE_DIR}/.env"
+    - echo "PG_PORT=${PG_PORT}" >> "${REMOTE_DIR}/.env"
+    - rsync -r -v "${REMOTE_DIR}" "${REMOTE_PROD}:./"
+    - ssh ${REMOTE_PROD} /bin/bash "
+      echo $REMOTE_DIR;
+      cd ~/$REMOTE_DIR;
+      docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY;
+      docker-compose pull;
+      docker-compose up -d --force-recreate;
+      docker-compose run api yarn migrate up;
+      docker-compose run api yarn insert_admin
+      "
+  only:
+    - tags
+
+# dev env with images built on the remote host
+dev-deploy-job:
+  image: docker:latest
+  stage: dev-deploy
+  services:
+    - docker:dind
+  script:
+    - apk update && apk add rsync openssh
+    - mkdir -p ~/.ssh && (umask  077 ; echo "${DEV_DEPLOY_KEY}" | base64 -d > ~/.ssh/id_rsa)
+    - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+    - mkdir "${REMOTE_DIR}"
+    - cp -R client "${REMOTE_DIR}/client"
+    - cp -R api "${REMOTE_DIR}/api"
+    - cp -R scraper "${REMOTE_DIR}/scraper"
+    - cp docker-compose.dev.yml "${REMOTE_DIR}/docker-compose.yml"
+    - rsync -r -v "${REMOTE_DIR}" "${REMOTE_DEV}:./"
+    - ssh ${REMOTE_DEV} /bin/bash "
+      echo $REMOTE_DIR;
+      cd ~/$REMOTE_DIR;
+      docker-compose build --build-arg REACT_APP_LOCAL_BACKEND_URL=/api;
+      docker-compose up -d --force-recreate;
+      docker-compose run api yarn migrate up;
+      docker-compose run api yarn insert_admin
+      "
+  only:
+    - main

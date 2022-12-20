@@ -1,0 +1,27 @@
+.h1-text {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: calc(10px + 2vmin);
+}
+
+.home-products {
+  margin-top: 2.5em;
+}
+
+.home-products .product-image-box {
+  width: 150px;
+  height: 150px;
+  background-color: white;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 10px;
+  border-radius: 10px;
+  margin-bottom: 1em;
+}
+.home-products .product-image {
+  max-width: 100%;
+  max-height: 100%;
+}

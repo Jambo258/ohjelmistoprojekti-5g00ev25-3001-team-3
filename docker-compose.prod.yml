@@ -1,0 +1,50 @@
+version: '3.9'
+services:
+  db:
+    image: postgres:14.6-alpine
+    environment:
+      POSTGRES_USER: '${DB_USER}'
+      POSTGRES_PASSWORD: '${DB_PASSWORD}'
+      POSTGRES_DB: '${DB_NAME}'
+    ports:
+      - '5432:5432'
+    volumes:
+      - pg_data:/var/lib/posgresql/data
+    restart: always
+  api:
+    image: '${API_IMAGE}'
+    depends_on:
+      - 'db'
+      - 'rabbitmq'
+    environment:
+      JWT_SECRET: '${JWT_SECRET}'
+      PG_USER: '${DB_USER}'
+      PG_PASSWORD: '${DB_PASSWORD}'
+      PG_PORT: '${PG_PORT}'
+      PG_DATABASE: '${DB_NAME}'
+      PG_HOST: '${PG_HOST}'
+      PORT: '${API_PORT}'
+      RABBITMQ_HOST: '${RABBITMQ_HOST}'
+      DATABASE_URL: '${DATABASE_URL}'
+    restart: always
+  client:
+    image: '${FRONT_END_IMAGE}'
+    restart: always
+    ports:
+      - 80:80
+    depends_on:
+      - 'api'
+  scraper:
+    image: '${SCRAPER_IMAGE}'
+    restart: always
+    environment:
+      BROKER_HOST: 'rabbitmq'
+    depends_on:
+      - 'rabbitmq'
+  rabbitmq:
+    image: 'rabbitmq:3.10-management'
+    container_name: rabbitmq
+    hostname: '${RABBITMQ_HOST}'
+    restart: always
+volumes:
+  pg_data:
